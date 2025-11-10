@@ -45,12 +45,12 @@ max_deviation_dist = 15
 #     conn.setblocking(True)
 
 
-steering_controller = PIDController(Kp=10.0, Ki=0.1, Kd=1.0, setpoint=0.0)
+steering_controller = PIDController(Kp=15.0, Ki=0.1, Kd=1.5, setpoint=0.0)
 
 target_velocity = 30.0
 velocity_controller = PIDController(Kp=1.0, Ki=0.1, Kd=0.0, setpoint=target_velocity)
 
-track = Track('position_data.csv', control_change_distance)
+track = Track('saved_tracks/vallelunga_club.csv', control_change_distance)
 
 ac_connection = AC_Connection(HOST, PORT, gamepad, track, velocity_controller, steering_controller)
 ac_connection.connect()

@@ -142,30 +142,25 @@ class AC_Connection:
                     break
 
                 last_line = None
-                chunk = data.decode(errors='replace')
-
-                # if this chunk already contains at least one complete line, take its last complete line
-                if '\n' in chunk:
-                    parts = chunk.split('\n')
-                    complete_lines = parts[:-1]
-                    if complete_lines:
-                        last_line = complete_lines[-1].strip()
-
-                # Keep only the newest complete line seen
+                buf = data.decode(errors='replace')
                 try:
                     self.conn.setblocking(False)
                     while True:
                         try:
                             more = self.conn.recv(4096)
-                            if not more:
-                                break
-                            s = more.decode(errors='replace')
-                            if '\n' in s:
-                                p = s.split('\n')[:-1]
-                                if p:
-                                    last_line = p[-1].strip()
-                        except BlockingIOError:
+                        except (BlockingIOError, InterruptedError):
                             break
+                        if not more:
+                            if not last_line and buf:
+                                last_line = buf.strip()
+                            self.close()
+                            break
+                        buf += more.decode(errors='replace')
+                    idx = buf.rfind('\n')
+                    if idx != -1:
+                        last_line = buf[:idx].split('\n')[-1].strip()
+                    elif buf and last_line is None:
+                        last_line = buf.strip()
                 finally:
                     try:
                         self.conn.setblocking(True)
