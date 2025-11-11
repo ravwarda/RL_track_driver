@@ -3,6 +3,7 @@ import time
 import csv
 import math
 
+
 class Track:
 
     def __init__(self, track_file, control_change_distance):
@@ -12,10 +13,9 @@ class Track:
         self.track_y = []
         self.load_interpolated_track()
 
-
     def load_interpolated_track(self):
 
-        with open(self.track_file, 'r') as csvfile:
+        with open(self.track_file, "r") as csvfile:
 
             reader = csv.reader(csvfile)
             next(reader)  # Skip header
@@ -23,10 +23,12 @@ class Track:
             # Read original points from CSV
             original_points = []
             for row in reader:
-                original_points.append((
-                    float(row[0]),  # x
-                    float(row[1]),  # y
-                ))
+                original_points.append(
+                    (
+                        float(row[0]),  # x
+                        float(row[1]),  # y
+                    )
+                )
 
         prev_x, prev_y = original_points[0]
         self.track_x.append(prev_x)
@@ -47,15 +49,14 @@ class Track:
                 self.track_y.append(curr_y)
                 cum_seg_dist = 0.0
 
-
     def find_nearest_point(self, point_x, point_y):
-    # TODO: compute track direction for each point in preprocessing step
+        # TODO: compute track direction for each point in preprocessing step
 
-        min_dist = float('inf')
+        min_dist = float("inf")
         nearest_idx = -1
         for i, (tx, ty) in enumerate(zip(self.track_x, self.track_y)):
             dist = math.hypot(tx - point_x, ty - point_y)
-            
+
             if dist < min_dist:
                 min_dist = dist
                 nearest_idx = i
@@ -98,7 +99,17 @@ class Track:
 
 class AC_Connection:
 
-    def __init__(self, host, port, gamepad, track, vel_controller, steer_controller, control_time_step=0.1):
+    def __init__(
+        self,
+        host,
+        port,
+        gamepad,
+        track,
+        vel_controller,
+        steer_controller,
+        control_time_step=0.1,
+    ):
+        
         self.host = host
         self.port = port
         self.track = track
@@ -112,7 +123,6 @@ class AC_Connection:
         self.addr = None
         self.last_control_time = time.time()
 
-
     def connect(self):
         self.server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -120,14 +130,13 @@ class AC_Connection:
         self.server_sock.listen()
         print(f"Listening on {self.host}:{self.port}...")
         self.conn, self.addr = self.server_sock.accept()
-        
+
         print(f"Connected by {self.addr}")
-    
 
     def control_step(self, correcting_action=None):
         if not self.conn:
             raise RuntimeError("No active connection.")
-        
+
         while True:
             if time.time() - self.last_control_time >= self.control_time_step:
                 self.last_control_time = time.time()
@@ -142,7 +151,7 @@ class AC_Connection:
                     break
 
                 last_line = None
-                buf = data.decode(errors='replace')
+                buf = data.decode(errors="replace")
                 try:
                     self.conn.setblocking(False)
                     while True:
@@ -155,10 +164,10 @@ class AC_Connection:
                                 last_line = buf.strip()
                             self.close()
                             break
-                        buf += more.decode(errors='replace')
-                    idx = buf.rfind('\n')
+                        buf += more.decode(errors="replace")
+                    idx = buf.rfind("\n")
                     if idx != -1:
-                        last_line = buf[:idx].split('\n')[-1].strip()
+                        last_line = buf[:idx].split("\n")[-1].strip()
                     elif buf and last_line is None:
                         last_line = buf.strip()
                 finally:
@@ -167,12 +176,12 @@ class AC_Connection:
                     except Exception:
                         pass
 
-                fields = last_line.replace('\r', '').split(';')
+                fields = last_line.replace("\r", "").split(";")
                 if len(fields) < 4:
                     break
 
                 car_position_str, velocity_str, lap_count_str, lap_time_str = fields[:4]
-                x_str, _, y_str = car_position_str.strip('()').split(',')
+                x_str, _, y_str = car_position_str.strip("()").split(",")
                 x_position = float(x_str)
                 y_position = float(y_str)
                 velocity = float(velocity_str)
@@ -180,8 +189,12 @@ class AC_Connection:
                 idx, min_dist = self.track.find_nearest_point(x_position, y_position)
 
                 # Update controllers
-                control_steering = self.steer_controller.update(min_dist, self.control_time_step)
-                control_ap_bp = self.vel_controller.update(velocity, self.control_time_step)
+                control_steering = self.steer_controller.update(
+                    min_dist, self.control_time_step
+                )
+                control_ap_bp = self.vel_controller.update(
+                    velocity, self.control_time_step
+                )
 
                 # Clip and scale controls
                 if control_ap_bp >= 0:
@@ -200,7 +213,9 @@ class AC_Connection:
                 # Apply controls
                 self.gamepad.left_trigger_float(value_float=control_brakes)
                 self.gamepad.right_trigger_float(value_float=control_apps)
-                self.gamepad.left_joystick_float(x_value_float=control_steering, y_value_float=0.0)
+                self.gamepad.left_joystick_float(
+                    x_value_float=control_steering, y_value_float=0.0
+                )
                 self.gamepad.update()
 
                 break
