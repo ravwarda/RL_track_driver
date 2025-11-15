@@ -2,6 +2,9 @@ import socket
 import time
 import csv
 import math
+import numpy as np
+import vgamepad as vg
+from pynput.keyboard import Key, Controller
 
 
 class Track:
@@ -103,20 +106,21 @@ class AC_Connection:
         self,
         host,
         port,
-        gamepad,
         track,
         vel_controller,
         steer_controller,
         control_time_step=0.1,
     ):
-        
+
         self.host = host
         self.port = port
         self.track = track
         self.vel_controller = vel_controller
         self.steer_controller = steer_controller
-        self.gamepad = gamepad
         self.control_time_step = control_time_step
+
+        self.gamepad = vg.VX360Gamepad()
+        self.keyboard = Controller()
 
         self.server_sock = None
         self.conn = None
@@ -133,7 +137,7 @@ class AC_Connection:
 
         print(f"Connected by {self.addr}")
 
-    def control_step(self, correcting_action=None):
+    def control_step(self, action):
         if not self.conn:
             raise RuntimeError("No active connection.")
 
@@ -188,7 +192,7 @@ class AC_Connection:
 
                 idx, min_dist = self.track.find_nearest_point(x_position, y_position)
 
-                # Update controllers
+                # Update PID controllers
                 control_steering = self.steer_controller.update(
                     min_dist, self.control_time_step
                 )
@@ -196,29 +200,72 @@ class AC_Connection:
                     velocity, self.control_time_step
                 )
 
-                # Clip and scale controls
-                if control_ap_bp >= 0:
-                    control_apps = min(control_ap_bp, 100.0)
-                    control_brakes = 0.0
+                # Clip controls
+                control_ap_bp = max(-1.0, min(1.0, control_ap_bp))
+                control_steering = max(-1.0, min(1.0, control_steering))
+
+                # Reward function calculation
+                action_steering, action_ap_bp = action
+                
+                reward = -np.square(control_steering - action_steering) - np.square(control_ap_bp - action_ap_bp)
+
+                if action_ap_bp >= 0:
+                    action_apps = min(action_ap_bp, 1.0)
+                    action_brakes = 0.0
                 else:
-                    control_apps = 0.0
-                    control_brakes = min(-control_ap_bp, 100.0)
-
-                control_apps = control_apps / 100.0
-                control_brakes = control_brakes / 100.0
-                control_steering = max(-1.0, min(1.0, control_steering / 100.0))
-
-                # TODO: RL correction
+                    action_apps = 0.0
+                    action_brakes = min(-action_ap_bp, 1.0)
 
                 # Apply controls
-                self.gamepad.left_trigger_float(value_float=control_brakes)
-                self.gamepad.right_trigger_float(value_float=control_apps)
+                self.gamepad.left_trigger_float(value_float=action_brakes)
+                self.gamepad.right_trigger_float(value_float=action_apps)
                 self.gamepad.left_joystick_float(
-                    x_value_float=control_steering, y_value_float=0.0
+                    x_value_float=action_steering, y_value_float=0.0
                 )
                 self.gamepad.update()
 
-                break
+                return (idx, min_dist, velocity), reward
+
+    def reset(self):
+        self.keyboard.press(Key.ctrl)
+        self.keyboard.press("o")
+        time.sleep(0.1)
+        self.keyboard.release("o")
+        self.keyboard.release(Key.ctrl)
+        time.sleep(0.1)
+        self.keyboard.press(Key.ctrl)
+        self.keyboard.press("k")
+        time.sleep(0.1)
+        self.keyboard.release("k")
+        self.keyboard.release(Key.ctrl)
+
+        self.conn.setblocking(False)
+        try:
+            while True:
+                _ = self.conn.recv(1024)
+        except BlockingIOError:
+            pass  # Buffer is now empty
+        self.conn.setblocking(True)
+
+        time.sleep(0.1)
+
+        data = self.conn.recv(4096)
+
+        if not data:
+            self.close()
+
+        data = data.decode(errors="replace")
+        fields = data.replace("\r", "").split(";")
+
+        car_position_str, velocity_str, lap_count_str, lap_time_str = fields[:4]
+        x_str, _, y_str = car_position_str.strip("()").split(",")
+        x_position = float(x_str)
+        y_position = float(y_str)
+        velocity = float(velocity_str)
+
+        idx, min_dist = self.track.find_nearest_point(x_position, y_position)
+
+        return (idx, min_dist, velocity)
 
     def close(self):
         if self.conn:
