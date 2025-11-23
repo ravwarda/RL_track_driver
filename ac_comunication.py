@@ -9,12 +9,15 @@ from pynput.keyboard import Key, Controller
 
 class Track:
 
-    def __init__(self, track_file, control_change_distance):
+    def __init__(self, track_file, control_change_distance, track_width=10.0):
         self.track_file = track_file
         self.control_change_distance = control_change_distance
+        self.track_width = track_width
+        self.normalized_points = []
         self.track_x = []
         self.track_y = []
         self.load_interpolated_track()
+        self.normalize_track_idx()
 
     def load_interpolated_track(self):
 
@@ -51,6 +54,10 @@ class Track:
                 self.track_x.append(curr_x)
                 self.track_y.append(curr_y)
                 cum_seg_dist = 0.0
+
+    def normalize_track_idx(self):
+        for i in range(len(self.track_x)):
+            self.normalized_points.append(i / len(self.track_x))
 
     def find_nearest_point(self, point_x, point_y):
         # TODO: compute track direction for each point in preprocessing step
@@ -97,7 +104,9 @@ class Track:
 
         # signed distance: positive if point is to the left of the track direction
         signed_dist = v_x * n_x + v_y * n_y
-        return nearest_idx, signed_dist
+
+        # return normalized values for PPO stability
+        return self.normalized_points[nearest_idx], signed_dist / (self.track_width / 2)
 
 
 class AC_Connection:
@@ -110,6 +119,7 @@ class AC_Connection:
         vel_controller,
         steer_controller,
         control_time_step=0.1,
+        reset_threshold=100,
     ):
 
         self.host = host
@@ -118,6 +128,7 @@ class AC_Connection:
         self.vel_controller = vel_controller
         self.steer_controller = steer_controller
         self.control_time_step = control_time_step
+        self.reset_threshold = reset_threshold
 
         self.gamepad = vg.VX360Gamepad()
         self.keyboard = Controller()
@@ -126,6 +137,10 @@ class AC_Connection:
         self.conn = None
         self.addr = None
         self.last_control_time = time.time()
+        self.last_action = 0.0, 0.0
+        self.last_positions = 0.0, 0.0
+        self.position_change_tracker = 0.0
+        self.position_change_count = 0
 
     def connect(self):
         self.server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -138,6 +153,8 @@ class AC_Connection:
         print(f"Connected by {self.addr}")
 
     def control_step(self, action):
+        reset = False
+
         if not self.conn:
             raise RuntimeError("No active connection.")
 
@@ -166,7 +183,6 @@ class AC_Connection:
                         if not more:
                             if not last_line and buf:
                                 last_line = buf.strip()
-                            self.close()
                             break
                         buf += more.decode(errors="replace")
                     idx = buf.rfind("\n")
@@ -192,6 +208,25 @@ class AC_Connection:
 
                 idx, min_dist = self.track.find_nearest_point(x_position, y_position)
 
+                # Reset if locked and not moving
+                self.position_change_tracker += math.hypot(
+                    x_position - self.last_positions[0],
+                    y_position - self.last_positions[1],
+                )
+
+                if self.position_change_count >= self.reset_threshold:
+                    if self.position_change_tracker < 1.0:
+                        reset = True
+                    self.position_change_tracker = 0.0
+                    self.position_change_count = 0
+
+                self.last_positions = (x_position, y_position)
+                self.position_change_count += 1
+
+                # Reset if out of track bounds
+                if self.track.track_width < abs(min_dist):
+                    reset = True
+
                 # Update PID controllers
                 control_steering = self.steer_controller.update(
                     min_dist, self.control_time_step
@@ -206,8 +241,13 @@ class AC_Connection:
 
                 # Reward function calculation
                 action_steering, action_ap_bp = action
-                
-                reward = -np.square(control_steering - action_steering) - np.square(control_ap_bp - action_ap_bp)
+
+                reward = (4
+                    - (np.square(control_steering - action_steering))
+                    - (np.square(control_ap_bp - action_ap_bp))
+                )
+
+                self.last_action = action_steering, action_ap_bp
 
                 if action_ap_bp >= 0:
                     action_apps = min(action_ap_bp, 1.0)
@@ -224,7 +264,9 @@ class AC_Connection:
                 )
                 self.gamepad.update()
 
-                return (idx, min_dist, velocity), reward
+                sc_velocity = velocity / 10.0 # scale for PPO stability
+
+                return (idx, min_dist, sc_velocity), reward, reset
 
     def reset(self):
         self.keyboard.press(Key.ctrl)
@@ -242,17 +284,21 @@ class AC_Connection:
         self.conn.setblocking(False)
         try:
             while True:
-                _ = self.conn.recv(1024)
+                _ = self.conn.recv(4096)
         except BlockingIOError:
             pass  # Buffer is now empty
         self.conn.setblocking(True)
 
         time.sleep(0.1)
 
-        data = self.conn.recv(4096)
-
-        if not data:
-            self.close()
+        while True:
+            try:
+                data = self.conn.recv(4096)
+                if not self.conn:
+                    self.close()
+                break
+            except (BlockingIOError, InterruptedError):
+                continue
 
         data = data.decode(errors="replace")
         fields = data.replace("\r", "").split(";")
@@ -268,6 +314,7 @@ class AC_Connection:
         return (idx, min_dist, velocity)
 
     def close(self):
+
         if self.conn:
             try:
                 self.conn.close()
