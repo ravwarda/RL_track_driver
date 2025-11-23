@@ -8,6 +8,7 @@ import numpy as np
 import torch
 from torch.distributions import MultivariateNormal
 from torch.nn import MSELoss
+from torch.nn.utils import clip_grad_norm_
 import csv
 
 
@@ -48,6 +49,8 @@ class PPO:
         self.epochs_per_iteration = 5
         self.lr_actor = 0.0003
         self.lr_critic = 0.0003
+        self.ent_coef = 0.001
+        self.max_grad_norm = 0.5
 
         # ensure cov on correct device
         self.cov_var = torch.full(size=(self.action_dim,), fill_value=0.5, device=self.device)
@@ -67,18 +70,19 @@ class PPO:
         self.logger.info("Starting learning for %s total steps", total_steps)
 
         while current_step < total_steps:
-            batch_obs, batch_acts, batch_log_probs, batch_rtgs, batch_lens = (
+            batch_obs, batch_acts, batch_log_probs, batch_rews, batch_lens, batch_vals, batch_dones = (
                 self.rollout()
             )
 
-            V, _ = self.evaluate(batch_obs, batch_acts)
-            A_k = batch_rtgs - V.detach()
+            A_k = self.calculate_gae(batch_rews, batch_vals, batch_dones)
+            V, _, _ = self.evaluate(batch_obs, batch_acts)
+            batch_rtgs = A_k + V.detach()
 
             # Normalize advantages
             A_k = (A_k - A_k.mean()) / (A_k.std() + 1e-10)
 
             for epoch in range(self.epochs_per_iteration):
-                V, curr_log_probs = self.evaluate(batch_obs, batch_acts)
+                V, curr_log_probs, entropy = self.evaluate(batch_obs, batch_acts)
 
                 ratios = torch.exp(curr_log_probs - batch_log_probs)
 
@@ -91,10 +95,16 @@ class PPO:
                 # Calculate actor loss
                 actor_loss = -torch.min(surr1, surr2).mean()
 
+                entropy_loss = entropy.mean()
+                actor_loss = actor_loss - self.ent_coef * entropy_loss
+
                 # Update actor network
                 self.actor_optimizer.zero_grad()
                 actor_loss.backward()
+                clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
                 self.actor_optimizer.step()
+
+                actor_loss.backward(retain_graph=True)
 
                 # Calculate critic loss
                 critic_loss = MSELoss()(V.squeeze(), batch_rtgs)
@@ -102,6 +112,7 @@ class PPO:
                 # Update critic network
                 self.critic_optimizer.zero_grad()
                 critic_loss.backward()
+                clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
                 self.critic_optimizer.step()
 
                 # Save metrics for each step
@@ -171,20 +182,27 @@ class PPO:
             except Exception:
                 pass
 
-        return v, log_probs
+        return v, log_probs, dist.entropy()
+    
+    def calculate_gae(self, rewards, values, dones):
+        batch_advantages = []
+        for ep_rews, ep_vals, ep_dones in zip(rewards, values, dones):
+            advantages = []
+            last_advantage = 0
 
-    def compute_rtgs(self, batch_rews):
-        batch_rtgs = []
+            for t in reversed(range(len(ep_rews))):
+                if t + 1 < len(ep_rews):
+                    delta = ep_rews[t] + self.gamma * ep_vals[t+1] * (1 - ep_dones[t+1]) - ep_vals[t]
+                else:
+                    delta = ep_rews[t] - ep_vals[t]
 
-        for ep_rews in reversed(batch_rews):
-            discounted_reward = 0
+                advantage = delta + self.gamma * self.lam * (1 - ep_dones[t]) * last_advantage
+                last_advantage = advantage
+                advantages.insert(0, advantage)
 
-            for reward in reversed(ep_rews):
-                discounted_reward = reward + discounted_reward * self.gamma
-                batch_rtgs.insert(0, discounted_reward)
+            batch_advantages.extend(advantages)
 
-        batch_rtgs = torch.tensor(batch_rtgs, dtype=torch.float, device=self.device)
-        return batch_rtgs
+        return torch.tensor(batch_advantages, dtype=torch.float)
 
     def rollout(self):
         # Batch data
@@ -192,13 +210,20 @@ class PPO:
         batch_acts = []  # batch actions
         batch_log_probs = []  # log probs of each action
         batch_rews = []  # batch rewards
-        batch_rtgs = []  # batch rewards-to-go
         batch_lens = []  # episodic lengths in batch
+
+        batch_vals = []
+        batch_dones = []
 
         step = 0
         while step < self.timesteps_per_batch:
 
             ep_rews = []  # rewards for current episode
+
+            ep_vals = []
+            ep_dones = []
+
+            reset = False
 
             obs = self.env.reset()
             self.logger.debug("New episode started (reset).")
@@ -206,17 +231,21 @@ class PPO:
             obs = torch.tensor(obs, dtype=torch.float, device=self.device)
 
             for ep_step in range(self.max_timesteps_per_episode):
+                ep_dones.append(reset)
+
                 step += 1
 
                 batch_obs.append(obs)
 
                 action, log_prob = self.get_action(obs)
+                val = self.critic.forward_critic(obs)
                 obs, reward, reset = self.env.control_step(action)
 
                 # convert env observation (tuple/list) to tensor on device
                 obs = torch.tensor(obs, dtype=torch.float, device=self.device)
 
                 ep_rews.append(reward)
+                ep_vals.append(val.flatten())
                 batch_acts.append(action)
                 batch_log_probs.append(log_prob)
 
@@ -225,6 +254,8 @@ class PPO:
 
             batch_lens.append(ep_step + 1)
             batch_rews.append(ep_rews)
+            batch_vals.append(ep_vals)
+            batch_dones.append(ep_dones)
 
             # log episode summary
             try:
@@ -252,9 +283,7 @@ class PPO:
         )
         batch_log_probs = torch.tensor([lp.detach().cpu().item() if isinstance(lp, torch.Tensor) else lp for lp in batch_log_probs], dtype=torch.float, device=self.device)
 
-        batch_rtgs = self.compute_rtgs(batch_rews)
-
-        return batch_obs, batch_acts, batch_log_probs, batch_rtgs, batch_lens
+        return batch_obs, batch_acts, batch_log_probs, batch_rews, batch_lens, batch_vals, batch_dones
 
     def save(self, path, include_optimizers = True):
         checkpoint = {
