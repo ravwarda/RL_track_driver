@@ -13,7 +13,7 @@ import csv
 
 
 class PPO:
-    def __init__(self, enviroment, input_size, output_size, device=None):
+    def __init__(self, enviroment, input_size, output_size, load_weights=False, device=None):
         # device selection
         if device is None:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -44,12 +44,13 @@ class PPO:
         # Hyperparameters
         self.timesteps_per_batch = 2048
         self.max_timesteps_per_episode = 1000
-        self.gamma = 0.95
+        self.gamma = 0.99
+        self.lambda_h = 0.95
         self.clip = 0.2
         self.epochs_per_iteration = 5
         self.lr_actor = 0.0003
         self.lr_critic = 0.0003
-        self.ent_coef = 0.001
+        self.ent_coef = 0.01
         self.max_grad_norm = 0.5
 
         # ensure cov on correct device
@@ -59,11 +60,14 @@ class PPO:
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=self.lr_actor)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=self.lr_critic)
 
-        # File to save training metrics
-        self.metrics_file = "training_metrics.csv"
-        with open(self.metrics_file, mode="w", newline="") as file:
-            writer = csv.writer(file)
-            writer.writerow(["Step", "Reward", "Actor Loss", "Critic Loss"])
+        if load_weights:
+            self.load('ppo_model.pth')
+        else:
+            # File to save training metrics
+            self.metrics_file = "training_metrics.csv"
+            with open(self.metrics_file, mode="w", newline="") as file:
+                writer = csv.writer(file)
+                writer.writerow(["Step", "Reward", "Actor Loss", "Critic Loss"])
 
     def learn(self, total_steps):
         current_step = 0
@@ -103,8 +107,6 @@ class PPO:
                 actor_loss.backward()
                 clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
                 self.actor_optimizer.step()
-
-                actor_loss.backward(retain_graph=True)
 
                 # Calculate critic loss
                 critic_loss = MSELoss()(V.squeeze(), batch_rtgs)
@@ -196,13 +198,13 @@ class PPO:
                 else:
                     delta = ep_rews[t] - ep_vals[t]
 
-                advantage = delta + self.gamma * self.lam * (1 - ep_dones[t]) * last_advantage
+                advantage = delta + self.gamma * self.lambda_h * (1 - ep_dones[t]) * last_advantage
                 last_advantage = advantage
                 advantages.insert(0, advantage)
 
             batch_advantages.extend(advantages)
 
-        return torch.tensor(batch_advantages, dtype=torch.float)
+        return torch.tensor(batch_advantages, dtype=torch.float, device=self.device)
 
     def rollout(self):
         # Batch data

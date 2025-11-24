@@ -16,8 +16,11 @@ class Track:
         self.normalized_points = []
         self.track_x = []
         self.track_y = []
+        self.track_direction = []
+        self.track_curvature = []
         self.load_interpolated_track()
         self.normalize_track_idx()
+        self.compute_track_properties()
 
     def load_interpolated_track(self):
 
@@ -59,9 +62,88 @@ class Track:
         for i in range(len(self.track_x)):
             self.normalized_points.append(i / len(self.track_x))
 
-    def find_nearest_point(self, point_x, point_y):
-        # TODO: compute track direction for each point in preprocessing step
+    def compute_track_properties(self):
+        """Compute tangent direction angle and curvature for all track points."""
+        n_points = len(self.track_x)
+        
+        for i in range(n_points):
+            # Compute tangent direction using neighbors
+            if i == 0:
+                t_x = self.track_x[1] - self.track_x[i]
+                t_y = self.track_y[1] - self.track_y[i]
+            elif i == n_points - 1:
+                t_x = self.track_x[i] - self.track_x[i-1]
+                t_y = self.track_y[i] - self.track_y[i-1]
+            else:
+                # Central difference for smoother tangent
+                t_x = self.track_x[i+1] - self.track_x[i-1]
+                t_y = self.track_y[i+1] - self.track_y[i-1]
+            
+            # Compute angle (in radians)
+            angle = math.atan2(t_y, t_x)
+            self.track_direction.append(angle)
+            
+            # Compute curvature using finite differences
+            if i == 0 or i == n_points - 1:
+                curvature = 0.0
+            else:
+                # Get angles at i-1, i, i+1
+                angle_prev = math.atan2(
+                    self.track_y[i] - self.track_y[i-1],
+                    self.track_x[i] - self.track_x[i-1]
+                )
+                angle_next = math.atan2(
+                    self.track_y[i+1] - self.track_y[i],
+                    self.track_x[i+1] - self.track_x[i]
+                )
+                
+                # Angular difference (handle wrapping)
+                angle_diff = angle_next - angle_prev
+                # Normalize to [-pi, pi]
+                while angle_diff > math.pi:
+                    angle_diff -= 2 * math.pi
+                while angle_diff < -math.pi:
+                    angle_diff += 2 * math.pi
+                
+                # Average segment length
+                dist_prev = math.hypot(
+                    self.track_x[i] - self.track_x[i-1],
+                    self.track_y[i] - self.track_y[i-1]
+                )
+                dist_next = math.hypot(
+                    self.track_x[i+1] - self.track_x[i],
+                    self.track_y[i+1] - self.track_y[i]
+                )
+                avg_dist = (dist_prev + dist_next) / 2.0
+                
+                if avg_dist > 0:
+                    curvature = angle_diff / avg_dist
+                else:
+                    curvature = 0.0
+            
+            self.track_curvature.append(curvature)
 
+    def curvature_ahead(self, idx, amount=6, step=5):
+        """Return a list of curvature values for points ahead of idx.
+        Wraps around the track if necessary.
+        """
+        if not self.track_curvature:
+            return []
+
+        n = len(self.track_curvature)
+        if n == 0:
+            return []
+
+        curvatures = [self.track_curvature[idx % n]]
+        base = idx % n
+        for i in range(1, int(amount)):
+            next_idx = (base + i * step) % n
+            curvatures.append(self.track_curvature[next_idx])
+
+        return curvatures
+
+
+    def find_nearest_point(self, point_x, point_y, car_heading):
         min_dist = float("inf")
         nearest_idx = -1
         for i, (tx, ty) in enumerate(zip(self.track_x, self.track_y)):
@@ -71,42 +153,37 @@ class Track:
                 min_dist = dist
                 nearest_idx = i
 
-        # determine signed normal deviation from the track at nearest_idx
+        # Get precomputed track angle
+        track_angle = self.track_direction[nearest_idx]
+        
+        # Left-hand normal direction (perpendicular to track)
+        n_x = -math.sin(track_angle)
+        n_y = math.cos(track_angle)
+
+        # Vector from track point to queried point
         tx = self.track_x[nearest_idx]
         ty = self.track_y[nearest_idx]
-
-        # compute tangent direction using neighbors (handle endpoints)
-        if nearest_idx == 0:
-            t_x = self.track_x[1] - tx
-            t_y = self.track_y[1] - ty
-        elif nearest_idx == len(self.track_x) - 1:
-            t_x = tx - self.track_x[-2]
-            t_y = ty - self.track_y[-2]
-        else:
-            # use central difference for a smoother tangent
-            t_x = self.track_x[nearest_idx + 1] - self.track_x[nearest_idx - 1]
-            t_y = self.track_y[nearest_idx + 1] - self.track_y[nearest_idx - 1]
-
-        mag = math.hypot(t_x, t_y)
-        if mag == 0:
-            t_x, t_y = 1.0, 0.0
-        else:
-            t_x /= mag
-            t_y /= mag
-
-        # left-hand normal (unit)
-        n_x = -t_y
-        n_y = t_x
-
-        # vector from track point to queried point
         v_x = point_x - tx
         v_y = point_y - ty
 
-        # signed distance: positive if point is to the left of the track direction
+        # Signed distance: positive if point is to the left of the track direction
         signed_dist = v_x * n_x + v_y * n_y
+        
+        # Angle deviation: difference between car heading and track direction
+        angle_deviation = car_heading - track_angle
+        # Normalize to [-pi, pi]
+        while angle_deviation > math.pi:
+            angle_deviation -= 2 * math.pi
+        while angle_deviation < -math.pi:
+            angle_deviation += 2 * math.pi
 
-        # return normalized values for PPO stability
-        return self.normalized_points[nearest_idx], signed_dist / (self.track_width / 2)
+        # Return normalized values for PPO stability
+        return (
+            self.normalized_points[nearest_idx],
+            signed_dist / (self.track_width / 2),
+            angle_deviation,
+            self.curvature_ahead(nearest_idx)
+        )
 
 
 class AC_Connection:
@@ -120,6 +197,7 @@ class AC_Connection:
         steer_controller,
         control_time_step=0.1,
         reset_threshold=100,
+        residual_scale=0.5,
     ):
 
         self.host = host
@@ -129,6 +207,7 @@ class AC_Connection:
         self.steer_controller = steer_controller
         self.control_time_step = control_time_step
         self.reset_threshold = reset_threshold
+        self.residual_scale = residual_scale
 
         self.gamepad = vg.VX360Gamepad()
         self.keyboard = Controller()
@@ -138,7 +217,8 @@ class AC_Connection:
         self.addr = None
         self.last_control_time = time.time()
         self.last_action = 0.0, 0.0
-        self.last_positions = 0.0, 0.0
+        self.last_track_idx = 0.0
+        self.last_positions = None  # Changed to None initially
         self.position_change_tracker = 0.0
         self.position_change_count = 0
 
@@ -206,13 +286,24 @@ class AC_Connection:
                 y_position = float(y_str)
                 velocity = float(velocity_str)
 
-                idx, min_dist = self.track.find_nearest_point(x_position, y_position)
+                # Compute car heading from movement
+                if self.last_positions is not None:
+                    dx = x_position - self.last_positions[0]
+                    dy = y_position - self.last_positions[1]
+                    car_heading = math.atan2(dy, dx) if (dx != 0 or dy != 0) else 0.0
+                else:
+                    car_heading = 0.0  # First step, no previous position
+
+                idx, min_dist, angle_deviation, curvatures = self.track.find_nearest_point(
+                    x_position, y_position, car_heading
+                )
 
                 # Reset if locked and not moving
-                self.position_change_tracker += math.hypot(
-                    x_position - self.last_positions[0],
-                    y_position - self.last_positions[1],
-                )
+                if self.last_positions is not None:
+                    self.position_change_tracker += math.hypot(
+                        x_position - self.last_positions[0],
+                        y_position - self.last_positions[1],
+                    )
 
                 if self.position_change_count >= self.reset_threshold:
                     if self.position_change_tracker < 1.0:
@@ -239,34 +330,46 @@ class AC_Connection:
                 control_ap_bp = max(-1.0, min(1.0, control_ap_bp))
                 control_steering = max(-1.0, min(1.0, control_steering))
 
-                # Reward function calculation
+                # Apply PPO action residuals
                 action_steering, action_ap_bp = action
+                action_steering *= self.residual_scale
+                action_ap_bp *= self.residual_scale
 
-                reward = (4
-                    - (np.square(control_steering - action_steering))
-                    - (np.square(control_ap_bp - action_ap_bp))
-                )
+                combined_steering = control_steering + action_steering
+                combined_ap_bp = control_ap_bp + action_ap_bp
 
-                self.last_action = action_steering, action_ap_bp
-
-                if action_ap_bp >= 0:
-                    action_apps = min(action_ap_bp, 1.0)
-                    action_brakes = 0.0
+                if combined_ap_bp >= 0:
+                    combined_apps = min(combined_ap_bp, 1.0)
+                    combined_brakes = 0.0
                 else:
-                    action_apps = 0.0
-                    action_brakes = min(-action_ap_bp, 1.0)
+                    combined_apps = 0.0
+                    combined_brakes = min(-combined_ap_bp, 1.0)
+                combined_steering = max(-1.0, min(1.0, combined_steering))
 
                 # Apply controls
-                self.gamepad.left_trigger_float(value_float=action_brakes)
-                self.gamepad.right_trigger_float(value_float=action_apps)
+                self.gamepad.left_trigger_float(value_float=combined_brakes)
+                self.gamepad.right_trigger_float(value_float=combined_apps)
                 self.gamepad.left_joystick_float(
-                    x_value_float=action_steering, y_value_float=0.0
+                    x_value_float=combined_steering, y_value_float=0.0
                 )
                 self.gamepad.update()
 
                 sc_velocity = velocity / 10.0 # scale for PPO stability
 
-                return (idx, min_dist, sc_velocity), reward, reset
+                # Reward function calculation
+                track_idx_diff = idx - self.last_track_idx
+                steering_diff = abs(action_steering - self.last_action[0])
+
+                reward = (
+                    1000 * track_idx_diff
+                    + 0.1 * (-0.5 * steering_diff + 1.0)
+                    + min(1 - min_dist ** 2, 0.0)
+                )
+
+                self.last_action = action_steering, action_ap_bp
+                self.last_track_idx = idx
+
+                return (idx, min_dist, sc_velocity, angle_deviation, *curvatures), reward, reset
 
     def reset(self):
         self.keyboard.press(Key.ctrl)
@@ -309,9 +412,13 @@ class AC_Connection:
         y_position = float(y_str)
         velocity = float(velocity_str)
 
-        idx, min_dist = self.track.find_nearest_point(x_position, y_position)
+        idx, min_dist, angle_deviation, curvatures = self.track.find_nearest_point(
+            x_position, y_position, 0.0
+        )
 
-        return (idx, min_dist, velocity)
+        self.last_track_idx = 0.0
+
+        return (idx, min_dist, velocity, angle_deviation, *curvatures)
 
     def close(self):
 

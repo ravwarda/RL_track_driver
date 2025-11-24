@@ -45,7 +45,7 @@ def main():
 	ac_connection = AC_Connection(HOST, PORT, track, velocity_controller, steering_controller)
 	ac_connection.connect()
 
-	agent = PPO(ac_connection, input_size=3, output_size=2)
+	agent = PPO(ac_connection, input_size=10, output_size=2, load_weights=False)
 
 	try:
 		agent.learn(total_steps=1000000)
