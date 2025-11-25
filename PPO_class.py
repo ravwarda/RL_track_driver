@@ -60,16 +60,16 @@ class PPO:
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=self.lr_actor)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=self.lr_critic)
 
+        self.metrics_file = "training_metrics.csv"
         if load_weights:
             self.load('ppo_model.pth')
         else:
             # File to save training metrics
-            self.metrics_file = "training_metrics.csv"
             with open(self.metrics_file, mode="w", newline="") as file:
                 writer = csv.writer(file)
                 writer.writerow(["Step", "Reward", "Actor Loss", "Critic Loss"])
 
-    def learn(self, total_steps):
+    def learn(self, total_steps=np.inf):
         current_step = 0
         self.logger.info("Starting learning for %s total steps", total_steps)
 
@@ -147,6 +147,8 @@ class PPO:
         dist = MultivariateNormal(mean, self.cov_mat)
         action = dist.sample()
         log_prob = dist.log_prob(action)
+
+        action = torch.clamp(action, -1.0, 1.0) # ensure action bounds
 
         # logging at debug level (avoid heavy logs in INFO)
         try:

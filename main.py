@@ -42,13 +42,13 @@ def main():
 
 	track = Track('saved_tracks/vallelunga_club.csv', control_change_distance)
 
-	ac_connection = AC_Connection(HOST, PORT, track, velocity_controller, steering_controller)
+	ac_connection = AC_Connection(HOST, PORT, track, velocity_controller, steering_controller, residual_scale=0.2)
 	ac_connection.connect()
 
-	agent = PPO(ac_connection, input_size=10, output_size=2, load_weights=False)
+	agent = PPO(ac_connection, input_size=12, output_size=2, load_weights=True)
 
 	try:
-		agent.learn(total_steps=1000000)
+		agent.learn()
 	finally:
 		agent.save('ppo_model.pth')
 

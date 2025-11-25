@@ -234,6 +234,7 @@ class AC_Connection:
 
     def control_step(self, action):
         reset = False
+        penalty = 0.0
 
         if not self.conn:
             raise RuntimeError("No active connection.")
@@ -307,6 +308,7 @@ class AC_Connection:
 
                 if self.position_change_count >= self.reset_threshold:
                     if self.position_change_tracker < 1.0:
+                        penalty = -500.0
                         reset = True
                     self.position_change_tracker = 0.0
                     self.position_change_count = 0
@@ -316,6 +318,7 @@ class AC_Connection:
 
                 # Reset if out of track bounds
                 if self.track.track_width < abs(min_dist):
+                    penalty = -100.0
                     reset = True
 
                 # Update PID controllers
@@ -361,15 +364,17 @@ class AC_Connection:
                 steering_diff = abs(action_steering - self.last_action[0])
 
                 reward = (
-                    1000 * track_idx_diff
-                    + 0.1 * (-0.5 * steering_diff + 1.0)
-                    + min(1 - min_dist ** 2, 0.0)
+                    2000 * track_idx_diff # reward for progress along track
+                    + 0.1 * (-0.5 * steering_diff + 1.0) # small reward for smooth steering
+                    + 0.1 * min(1 - min_dist ** 2, 0.0) # penalty for being off track
+                    - math.exp(-2.0 * velocity + 2.0) # penalty for very low speed
+                    + penalty # large penalties for resets
                 )
 
                 self.last_action = action_steering, action_ap_bp
                 self.last_track_idx = idx
 
-                return (idx, min_dist, sc_velocity, angle_deviation, *curvatures), reward, reset
+                return (idx, min_dist, control_ap_bp, control_steering, sc_velocity, angle_deviation, *curvatures), reward, reset
 
     def reset(self):
         self.keyboard.press(Key.ctrl)
@@ -410,7 +415,6 @@ class AC_Connection:
         x_str, _, y_str = car_position_str.strip("()").split(",")
         x_position = float(x_str)
         y_position = float(y_str)
-        velocity = float(velocity_str)
 
         idx, min_dist, angle_deviation, curvatures = self.track.find_nearest_point(
             x_position, y_position, 0.0
@@ -418,7 +422,7 @@ class AC_Connection:
 
         self.last_track_idx = 0.0
 
-        return (idx, min_dist, velocity, angle_deviation, *curvatures)
+        return (idx, min_dist, 0.0, 0.0, 0.0, angle_deviation, *curvatures)
 
     def close(self):
 
