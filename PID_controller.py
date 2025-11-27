@@ -29,3 +29,7 @@ class PIDController:
         self.previous_error = error
         
         return output
+    
+    def restart(self):
+        self.previous_error = 0
+        self.integral = 0

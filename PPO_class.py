@@ -47,10 +47,10 @@ class PPO:
         self.gamma = 0.99
         self.lambda_h = 0.95
         self.clip = 0.2
-        self.epochs_per_iteration = 5
-        self.lr_actor = 0.0003
-        self.lr_critic = 0.0003
-        self.ent_coef = 0.01
+        self.epochs_per_iteration = 3
+        self.lr_actor = 0.0005
+        self.lr_critic = 0.0006
+        self.ent_coef = 0.0001
         self.max_grad_norm = 0.5
 
         # ensure cov on correct device
@@ -60,17 +60,27 @@ class PPO:
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=self.lr_actor)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=self.lr_critic)
 
+
         self.metrics_file = "training_metrics.csv"
+        self.total_episodes = 0
         if load_weights:
             self.load('ppo_model.pth')
-        else:
+
+
+        if not os.path.exists(self.metrics_file) or not load_weights:
             # File to save training metrics
             with open(self.metrics_file, mode="w", newline="") as file:
                 writer = csv.writer(file)
-                writer.writerow(["Step", "Reward", "Actor Loss", "Critic Loss"])
+                writer.writerow(["Episode", "Reward", "Actor Loss", "Critic Loss"])
+        else:
+            with open(self.metrics_file, mode="r") as file:
+                last_line = file.readlines()[-1]
+                self.total_episodes = int(last_line.split(",")[0])
+        
 
     def learn(self, total_steps=np.inf):
         current_step = 0
+
         self.logger.info("Starting learning for %s total steps", total_steps)
 
         while current_step < total_steps:
@@ -82,7 +92,7 @@ class PPO:
             V, _, _ = self.evaluate(batch_obs, batch_acts)
             batch_rtgs = A_k + V.detach()
 
-            # Normalize advantages
+            # Normalize advantages and returns
             A_k = (A_k - A_k.mean()) / (A_k.std() + 1e-10)
 
             for epoch in range(self.epochs_per_iteration):
@@ -117,17 +127,6 @@ class PPO:
                 clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
                 self.critic_optimizer.step()
 
-                # Save metrics for each step
-                with open(self.metrics_file, mode="a", newline="") as file:
-                    writer = csv.writer(file)
-                    for step, reward in enumerate(batch_rtgs.cpu().numpy()):
-                        writer.writerow([
-                            current_step + step,
-                            float(reward),
-                            float(actor_loss.detach().cpu().item()),
-                            float(critic_loss.detach().cpu().item())
-                        ])
-
                 current_step += np.sum(batch_lens)
 
                 # Log epoch metrics at INFO for visibility
@@ -138,6 +137,17 @@ class PPO:
                     float(critic_loss.detach().cpu().item()),
                     float(V.detach().cpu().mean().item()) if isinstance(V, torch.Tensor) else 0.0
                 )
+
+            # Save metrics for each episode
+            with open(self.metrics_file, mode="a", newline="") as file:
+                writer = csv.writer(file)
+                for ep_idx, ep_reward in enumerate(batch_rews):
+                    writer.writerow([
+                        self.total_episodes - len(batch_lens) + ep_idx + 1,
+                        float(np.sum(ep_reward)),
+                        float(actor_loss.detach().cpu().item()),
+                        float(critic_loss.detach().cpu().item())
+                    ])
 
         self.env.close()
 
@@ -194,11 +204,14 @@ class PPO:
             advantages = []
             last_advantage = 0
 
+            # Detach episode values to prevent gradient flow
+            ep_vals_detached = [v.detach().cpu().item() if isinstance(v, torch.Tensor) else v for v in ep_vals]
+
             for t in reversed(range(len(ep_rews))):
                 if t + 1 < len(ep_rews):
-                    delta = ep_rews[t] + self.gamma * ep_vals[t+1] * (1 - ep_dones[t+1]) - ep_vals[t]
+                    delta = ep_rews[t] + self.gamma * ep_vals_detached[t+1] * (1 - ep_dones[t+1]) - ep_vals_detached[t]
                 else:
-                    delta = ep_rews[t] - ep_vals[t]
+                    delta = ep_rews[t] - ep_vals_detached[t]
 
                 advantage = delta + self.gamma * self.lambda_h * (1 - ep_dones[t]) * last_advantage
                 last_advantage = advantage
@@ -235,19 +248,18 @@ class PPO:
             obs = torch.tensor(obs, dtype=torch.float, device=self.device)
 
             for ep_step in range(self.max_timesteps_per_episode):
-                ep_dones.append(reset)
-
                 step += 1
-
+                
                 batch_obs.append(obs)
 
                 action, log_prob = self.get_action(obs)
                 val = self.critic.forward_critic(obs)
                 obs, reward, reset = self.env.control_step(action)
 
-                # convert env observation (tuple/list) to tensor on device
+                # convert env observation to tensor on device
                 obs = torch.tensor(obs, dtype=torch.float, device=self.device)
 
+                ep_dones.append(reset)
                 ep_rews.append(reward)
                 ep_vals.append(val.flatten())
                 batch_acts.append(action)
@@ -272,6 +284,8 @@ class PPO:
                 ep_return,
                 step,
             )
+            
+            self.total_episodes += 1
 
         # move/stack observations to selected device
         if len(batch_obs) > 0 and isinstance(batch_obs[0], torch.Tensor):

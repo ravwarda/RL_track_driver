@@ -308,7 +308,7 @@ class AC_Connection:
 
                 if self.position_change_count >= self.reset_threshold:
                     if self.position_change_tracker < 1.0:
-                        penalty = -500.0
+                        penalty = -5.0
                         reset = True
                     self.position_change_tracker = 0.0
                     self.position_change_count = 0
@@ -318,7 +318,7 @@ class AC_Connection:
 
                 # Reset if out of track bounds
                 if self.track.track_width < abs(min_dist):
-                    penalty = -100.0
+                    penalty = -1.0
                     reset = True
 
                 # Update PID controllers
@@ -364,10 +364,10 @@ class AC_Connection:
                 steering_diff = abs(action_steering - self.last_action[0])
 
                 reward = (
-                    2000 * track_idx_diff # reward for progress along track
-                    + 0.1 * (-0.5 * steering_diff + 1.0) # small reward for smooth steering
-                    + 0.1 * min(1 - min_dist ** 2, 0.0) # penalty for being off track
-                    - math.exp(-2.0 * velocity + 2.0) # penalty for very low speed
+                    20 * track_idx_diff # reward for progress along track
+                    + 0.001 * (-0.5 * steering_diff + 1.0) # small reward for smooth steering
+                    + 0.001 * min(1 - min_dist ** 2, 0.0) # penalty for being off track
+                    - 0.01 * math.exp(-2.0 * velocity + 2.0) # penalty for very low speed
                     + penalty # large penalties for resets
                 )
 
@@ -421,6 +421,8 @@ class AC_Connection:
         )
 
         self.last_track_idx = 0.0
+        self.steer_controller.restart()
+        self.vel_controller.restart()
 
         return (idx, min_dist, 0.0, 0.0, 0.0, angle_deviation, *curvatures)
 

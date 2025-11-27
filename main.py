@@ -33,7 +33,7 @@ def main():
 	HOST = '127.0.0.1'  # Localhost
 	PORT = 65432        # Port to listen on
 
-	control_change_distance = 0.5
+	control_change_distance = 1.0
 
 	steering_controller = PIDController(Kp=0.2, Ki=0.001, Kd=0.015, setpoint=0.0)
 
