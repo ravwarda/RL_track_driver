@@ -141,6 +141,14 @@ class Track:
             curvatures.append(self.track_curvature[next_idx])
 
         return curvatures
+    
+    def track_progresion_speed(self, time_diff, velocity):
+        """Estimate track progression based on velocity and time difference."""
+        # Approximate distance traveled
+        distance = velocity * time_diff
+        # Estimate progression in normalized track index
+        progression = distance /  len(self.track_x)
+        return progression
 
 
     def find_nearest_point(self, point_x, point_y, car_heading):
@@ -308,7 +316,7 @@ class AC_Connection:
 
                 if self.position_change_count >= self.reset_threshold:
                     if self.position_change_tracker < 1.0:
-                        penalty = -5.0
+                        penalty = -50.0
                         reset = True
                     self.position_change_tracker = 0.0
                     self.position_change_count = 0
@@ -316,9 +324,9 @@ class AC_Connection:
                 self.last_positions = (x_position, y_position)
                 self.position_change_count += 1
 
-                # Reset if out of track bounds
-                if self.track.track_width < abs(min_dist):
-                    penalty = -1.0
+                # Reset if out of track bounds (min_dist is normalized)
+                if 1.5 < abs(min_dist):
+                    penalty = -30.0
                     reset = True
 
                 # Update PID controllers
@@ -362,12 +370,13 @@ class AC_Connection:
                 # Reward function calculation
                 track_idx_diff = idx - self.last_track_idx
                 steering_diff = abs(action_steering - self.last_action[0])
+                predicted_track_idx = self.track.track_progresion_speed(self.control_time_step, 10.0)
 
                 reward = (
-                    20 * track_idx_diff # reward for progress along track
-                    + 0.001 * (-0.5 * steering_diff + 1.0) # small reward for smooth steering
-                    + 0.001 * min(1 - min_dist ** 2, 0.0) # penalty for being off track
-                    - 0.01 * math.exp(-2.0 * velocity + 2.0) # penalty for very low speed
+                    0.01 * (track_idx_diff - predicted_track_idx) ** 3  # reward for exceeding expected progress
+                    + 0.002 * track_idx_diff  # small reward for track progression itself
+                    + 0.01 * (-0.5 * steering_diff + 1.0) # small reward for smooth steering
+                    + 0.01 * min(1 - min_dist ** 2, 0.0) # penalty for being off track
                     + penalty # large penalties for resets
                 )
 

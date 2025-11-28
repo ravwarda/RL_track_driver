@@ -40,9 +40,9 @@ def main():
 	target_velocity = 10.0
 	velocity_controller = PIDController(Kp=0.04, Ki=0.001, Kd=0.0, setpoint=target_velocity)
 
-	track = Track('saved_tracks/vallelunga_club.csv', control_change_distance)
+	track = Track('saved_tracks/vallelunga_club.csv', control_change_distance, track_width=12.0)
 
-	ac_connection = AC_Connection(HOST, PORT, track, velocity_controller, steering_controller, residual_scale=0.2)
+	ac_connection = AC_Connection(HOST, PORT, track, velocity_controller, steering_controller, residual_scale=0.3)
 	ac_connection.connect()
 
 	agent = PPO(ac_connection, input_size=12, output_size=2, load_weights=True)

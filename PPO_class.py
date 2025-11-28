@@ -49,8 +49,8 @@ class PPO:
         self.clip = 0.2
         self.epochs_per_iteration = 3
         self.lr_actor = 0.0005
-        self.lr_critic = 0.0006
-        self.ent_coef = 0.0001
+        self.lr_critic = 0.0005
+        self.ent_coef = 0.0
         self.max_grad_norm = 0.5
 
         # ensure cov on correct device
@@ -75,7 +75,10 @@ class PPO:
         else:
             with open(self.metrics_file, mode="r") as file:
                 last_line = file.readlines()[-1]
-                self.total_episodes = int(last_line.split(",")[0])
+                try:
+                    self.total_episodes = int(last_line.split(",")[0])
+                except ValueError:
+                    self.total_episodes = 0
         
 
     def learn(self, total_steps=np.inf):
