@@ -123,7 +123,7 @@ class Track:
             
             self.track_curvature.append(curvature)
 
-    def curvature_ahead(self, idx, amount=6, step=5):
+    def curvature_ahead(self, idx, amount=6, step=25):
         """Return a list of curvature values for points ahead of idx.
         Wraps around the track if necessary.
         """
@@ -206,6 +206,8 @@ class AC_Connection:
         control_time_step=0.1,
         reset_threshold=100,
         residual_scale=0.5,
+        control_scale_PID=1.0,
+        target_velocity_PID=10.0,
     ):
 
         self.host = host
@@ -216,6 +218,8 @@ class AC_Connection:
         self.control_time_step = control_time_step
         self.reset_threshold = reset_threshold
         self.residual_scale = residual_scale
+        self.control_scale_PID = control_scale_PID
+        self.target_velocity_PID = target_velocity_PID
 
         self.gamepad = vg.VX360Gamepad()
         self.keyboard = Controller()
@@ -229,6 +233,7 @@ class AC_Connection:
         self.last_positions = None  # Changed to None initially
         self.position_change_tracker = 0.0
         self.position_change_count = 0
+        self.basic_track_progress = self.track.track_progresion_speed(self.control_time_step, self.target_velocity_PID)
 
     def connect(self):
         self.server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -326,7 +331,7 @@ class AC_Connection:
 
                 # Reset if out of track bounds (min_dist is normalized)
                 if 1.5 < abs(min_dist):
-                    penalty = -30.0
+                    penalty = -20.0 - velocity * 5.0 # penalty scales with speed
                     reset = True
 
                 # Update PID controllers
@@ -338,8 +343,11 @@ class AC_Connection:
                 )
 
                 # Clip controls
-                control_ap_bp = max(-1.0, min(1.0, control_ap_bp))
+                control_ap_bp = max(0.0, min(1.0, control_ap_bp))
                 control_steering = max(-1.0, min(1.0, control_steering))
+
+                control_steering *= self.control_scale_PID
+                control_ap_bp *= self.control_scale_PID
 
                 # Apply PPO action residuals
                 action_steering, action_ap_bp = action
@@ -365,19 +373,22 @@ class AC_Connection:
                 )
                 self.gamepad.update()
 
-                sc_velocity = velocity / 10.0 # scale for PPO stability
+                sc_velocity = velocity / self.target_velocity_PID # scale for PPO stability
 
                 # Reward function calculation
                 track_idx_diff = idx - self.last_track_idx
+                if abs(track_idx_diff) > 0.02:
+                    track_idx_diff = self.basic_track_progress  # prevent large jumps
+                    
                 steering_diff = abs(action_steering - self.last_action[0])
-                predicted_track_idx = self.track.track_progresion_speed(self.control_time_step, 10.0)
 
                 reward = (
-                    0.01 * (track_idx_diff - predicted_track_idx) ** 3  # reward for exceeding expected progress
-                    + 0.002 * track_idx_diff  # small reward for track progression itself
-                    + 0.01 * (-0.5 * steering_diff + 1.0) # small reward for smooth steering
-                    + 0.01 * min(1 - min_dist ** 2, 0.0) # penalty for being off track
-                    + penalty # large penalties for resets
+                    5e6 * (track_idx_diff - self.basic_track_progress) ** 3    # reward for exceeding expected progress
+                    + 10.0 * (track_idx_diff - self.basic_track_progress)        # linear reward for progress
+                    + 0.1 * (sc_velocity)                                 # reward for speed
+                    + 0.02 * -steering_diff                                     # small penalty for steering changes
+                    + 1.5 * min(1 - min_dist ** 2, 0.0)                         # penalty for being off track
+                    + penalty                                                   # large penalties for resets
                 )
 
                 self.last_action = action_steering, action_ap_bp

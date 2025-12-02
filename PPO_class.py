@@ -48,9 +48,9 @@ class PPO:
         self.lambda_h = 0.95
         self.clip = 0.2
         self.epochs_per_iteration = 3
-        self.lr_actor = 0.0005
-        self.lr_critic = 0.0005
-        self.ent_coef = 0.0
+        self.lr_actor = 0.0004
+        self.lr_critic = 0.0004
+        self.ent_coef = 0.0001
         self.max_grad_norm = 0.5
 
         # ensure cov on correct device

@@ -33,16 +33,16 @@ def main():
 	HOST = '127.0.0.1'  # Localhost
 	PORT = 65432        # Port to listen on
 
-	control_change_distance = 1.0
+	control_change_distance = 0.2
 
-	steering_controller = PIDController(Kp=0.2, Ki=0.001, Kd=0.015, setpoint=0.0)
+	steering_controller = PIDController(Kp=0.2, Ki=0.0, Kd=0.015, setpoint=0.0)
 
 	target_velocity = 10.0
-	velocity_controller = PIDController(Kp=0.04, Ki=0.001, Kd=0.0, setpoint=target_velocity)
+	velocity_controller = PIDController(Kp=0.04, Ki=0.0, Kd=0.0, setpoint=target_velocity)
 
 	track = Track('saved_tracks/vallelunga_club.csv', control_change_distance, track_width=12.0)
 
-	ac_connection = AC_Connection(HOST, PORT, track, velocity_controller, steering_controller, residual_scale=0.3)
+	ac_connection = AC_Connection(HOST, PORT, track, velocity_controller, steering_controller, residual_scale=0.5, control_scale_PID=0.8)
 	ac_connection.connect()
 
 	agent = PPO(ac_connection, input_size=12, output_size=2, load_weights=True)
